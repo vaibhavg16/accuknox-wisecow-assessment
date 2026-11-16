@@ -27,9 +27,21 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+      volumes:
+      - name: tls-certs
+        secret:
+          secretName: wisecow-tls
+      - name: nginx-config
+        configMap:
+          name: wisecow-nginx-config
+      # Writable directories for readOnlyRootFilesystem
+      - name: nginx-cache
+        emptyDir: {}
+      - name: nginx-run
+        emptyDir: {}
       containers:
       - name: wisecow
-        image: docker.io/${DOCKERHUB_USERNAME}/wisecow:latest
+        image: docker.io/vaibhav161202/wisecow:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 4499
@@ -63,10 +75,9 @@ spec:
           failureThreshold: 3
         securityContext:
           allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
+          readOnlyRootFilesystem: false  # Needs to write FIFO in /app
           capabilities:
             drop: ["ALL"]
-      # TLS sidecar (nginx) for challenge goal
       - name: tls-sidecar
         image: nginx:alpine
         ports:
@@ -80,13 +91,15 @@ spec:
           mountPath: /etc/nginx/nginx.conf
           subPath: nginx.conf
           readOnly: true
-      volumes:
-      - name: tls-certs
-        secret:
-          secretName: wisecow-tls
-      - name: nginx-config
-        configMap:
-          name: wisecow-nginx-config
+        - name: nginx-cache
+          mountPath: /var/cache/nginx
+        - name: nginx-run
+          mountPath: /var/run
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
 ---
 apiVersion: v1
 kind: ServiceAccount
