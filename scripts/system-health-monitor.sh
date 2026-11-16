@@ -8,7 +8,8 @@ THRESHOLD_CPU=80
 THRESHOLD_MEM=80
 THRESHOLD_DISK=85
 THRESHOLD_PROC=300
-LOG_FILE="/var/log/system-health.log"
+# Use user-writable log location
+LOG_FILE="${HOME}/system-health.log"
 ALERT_COOLDOWN=300  # seconds
 
 alert() {

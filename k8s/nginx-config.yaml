@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wisecow-nginx-config
+  namespace: wisecow
+data:
+  nginx.conf: |
+    events { worker_connections 1024; }
+    http {
+      server {
+        listen 8443 ssl;
+        server_name localhost;
+        ssl_certificate /etc/nginx/certs/tls.crt;
+        ssl_certificate_key /etc/nginx/certs/tls.key;
+        location / {
+          proxy_pass http://localhost:4499;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+        }
+      }
+    }
