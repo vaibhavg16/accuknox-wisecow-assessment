@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wisecow
+  namespace: wisecow
+  labels:
+    app.kubernetes.io/name: wisecow
+    app.kubernetes.io/version: "1.0.0"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: wisecow
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: wisecow
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "4499"
+    spec:
+      serviceAccountName: wisecow-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: wisecow
+        image: docker.io/${DOCKERHUB_USERNAME}/wisecow:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 4499
+          name: http
+          protocol: TCP
+        envFrom:
+        - configMapRef:
+            name: wisecow-config
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+          limits:
+            cpu: "500m"
+            memory: "128Mi"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 4499
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 4499
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 3
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+      # TLS sidecar (nginx) for challenge goal
+      - name: tls-sidecar
+        image: nginx:alpine
+        ports:
+        - containerPort: 8443
+          name: https
+        volumeMounts:
+        - name: tls-certs
+          mountPath: /etc/nginx/certs
+          readOnly: true
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+      volumes:
+      - name: tls-certs
+        secret:
+          secretName: wisecow-tls
+      - name: nginx-config
+        configMap:
+          name: wisecow-nginx-config
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: wisecow-sa
+  namespace: wisecow
