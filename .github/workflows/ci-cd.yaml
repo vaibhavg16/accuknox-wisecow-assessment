@@ -161,6 +161,16 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
+    # The runner may execute as a different user than the one that ran
+    # config.sh (svc.sh installs a systemd unit), so ~/.kube/config is not
+    # guaranteed to exist. Supplying KUBECONFIG_DATA makes the job independent
+    # of runner-user state.
+    - name: Set up kubeconfig
+      run: |
+        mkdir -p ~/.kube
+        echo "${{ secrets.KUBECONFIG_DATA }}" | base64 -d > ~/.kube/config
+        chmod 600 ~/.kube/config
+
     - name: Confirm cluster is reachable
       run: |
         kubectl config current-context
