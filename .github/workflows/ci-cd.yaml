@@ -115,20 +115,36 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
-    # Smoke-test the image we just built before trusting the tag.
-    - name: Verify the built image runs
+    # Smoke-test the published image before the pipeline is considered green.
+    #
+    # Use the tags metadata-action actually produced, not ${{ github.sha }}:
+    # `type=sha,prefix=` emits a 7-character tag, so referencing the full
+    # 40-character SHA asks Docker for an image that was never built.
+    # Every computed tag points at the same digest, so any of them will do.
+    - name: Verify the published image runs
+      if: github.event_name != 'pull_request'
       run: |
-        docker run -d --name smoke -p 14500:4499 \
-          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        IMAGE_TAG="$(echo '${{ steps.meta.outputs.tags }}' | head -n1)"
+        echo "testing $IMAGE_TAG"
+        docker run -d --name smoke -p 14500:4499 "$IMAGE_TAG"
+
         for i in $(seq 1 20); do
           if curl -fsS http://localhost:14500/ -o /tmp/out; then
-            grep -q '<pre>' /tmp/out && echo "image serves cowsay output" && exit 0
+            if grep -q '</pre>' /tmp/out; then
+              echo "image serves a complete cowsay response"
+              exit 0
+            fi
           fi
           sleep 2
         done
-        echo "::error::image did not serve a response within 40s"
-        docker logs smoke
+
+        echo "::error::image did not serve a complete response within 40s"
+        docker logs smoke || true
         exit 1
+
+    - name: Stop smoke container
+      if: always() && github.event_name != 'pull_request'
+      run: docker rm -f smoke || true
 
 # Deployment is intentionally not part of this workflow.
 #
@@ -138,3 +154,4 @@ jobs:
 # route to it. Deployment requires a cloud cluster (GKE/EKS) with a stored
 # KUBECONFIG secret, or a self-hosted runner bound to a reachable cluster.
 # Cluster deployment was verified locally - see docs/SUBMISSION_REPORT.md.
+
