@@ -191,13 +191,25 @@ jobs:
         kubectl apply -k k8s/
         kubectl -n wisecow rollout status deployment/wisecow --timeout=180s
 
-    - name: Smoke test through the service
+    # curl, not wget: the runtime image is debian-slim and ships curl (it is
+    # needed by the HEALTHCHECK) but no wget. Using wget here fails with
+    # "wget: not found" inside an otherwise healthy container.
+    - name: Smoke test through the pod
       run: |
         POD=$(kubectl -n wisecow get pod -l app.kubernetes.io/name=wisecow \
           -o jsonpath='{.items[0].metadata.name}')
+        echo "testing pod: $POD"
         kubectl -n wisecow exec "$POD" -c wisecow -- \
-          sh -c 'wget -q -O- http://127.0.0.1:4499/ | grep -q "</pre>"'
-        echo "deployment serving a complete response"
+          sh -c 'curl -fsS --max-time 5 http://127.0.0.1:4499/ | grep -q "</pre>"'
+        echo "app container serves a complete response"
+
+    - name: Smoke test through the TLS sidecar
+      run: |
+        POD=$(kubectl -n wisecow get pod -l app.kubernetes.io/name=wisecow \
+          -o jsonpath='{.items[0].metadata.name}')
+        kubectl -n wisecow exec "$POD" -c tls-sidecar -- \
+          sh -c 'wget -q --no-check-certificate -O- https://127.0.0.1:8443/ | grep -q "</pre>"'
+        echo "TLS sidecar serves a complete response over HTTPS"
 
     - name: Report pod state
       if: always()
