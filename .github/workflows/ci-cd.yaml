@@ -10,10 +10,10 @@ on:
 env:
   REGISTRY: docker.io
   IMAGE_NAME: vaibhav161202/wisecow
-  KUBE_NAMESPACE: wisecow
 
 jobs:
   build:
+    name: Build, scan and publish
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -66,39 +66,42 @@ jobs:
       with:
         sarif_file: 'trivy-results.sarif'
 
-    - name: Validate Kubernetes manifests
+    # Render the kustomization purely client-side. `kubectl apply -k
+    # --dry-run=client` is NOT offline: it still performs API discovery to
+    # resolve resource types and fails with "connection refused" on a runner
+    # with no cluster. `kubectl kustomize` touches no API server.
+    - name: Render Kubernetes manifests
       run: |
-        kubectl apply -k k8s/ --dry-run=client --validate=false
-        echo "✅ Manifests valid"
+        kubectl kustomize k8s/ > rendered.yaml
+        echo "Rendered $(grep -c '^kind:' rendered.yaml) resources"
+        grep '^kind:' rendered.yaml | sort | uniq -c
 
-  deploy:
-    needs: build
-    if: github.ref == 'refs/heads/main'
-    runs-on: self-hosted  # REQUIRES SELF-HOSTED RUNNER WITH KUBECONFIG
-    permissions:
-      contents: read
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-
-    - name: Set up kubectl
+    # Offline schema validation against the upstream Kubernetes OpenAPI specs.
+    # -ignore-missing-schemas skips the cert-manager CRDs, which aren't in the
+    # upstream schema bundle.
+    - name: Validate manifest schemas
       run: |
-        echo "${{ secrets.KUBECONFIG_DATA }}" | base64 -d > kubeconfig.yaml
-        export KUBECONFIG=kubeconfig.yaml
+        curl -sSLo kubeconform.tar.gz \
+          https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz
+        tar xzf kubeconform.tar.gz kubeconform
+        ./kubeconform -strict -summary -ignore-missing-schemas rendered.yaml
 
-    - name: Update image tag in deployment
+    - name: Verify wisecow.sh is intact
       run: |
-        cd k8s
-        sed -i "s|image: docker.io/.*/wisecow:.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}|" deployment.yaml
+        # Cheap regression guard: the script was once committed truncated,
+        # which produced a CrashLooping image. Fail fast if that recurs.
+        test "$(tail -1 wisecow.sh)" = "main" \
+          || { echo "::error::wisecow.sh is truncated - final line should be 'main'"; exit 1; }
+        bash -n wisecow.sh
+        echo "wisecow.sh syntax OK"
 
-    - name: Deploy to Kubernetes
-      run: |
-        kubectl apply -k k8s/
-        kubectl rollout status deployment/wisecow -n ${{ env.KUBE_NAMESPACE }} --timeout=120s
+# Deployment is intentionally not part of this workflow.
+#
+# The assessment requirement is an Action that builds a new image when changes
+# are pushed - which the build job satisfies. A deploy stage cannot work from a
+# GitHub-hosted runner against a kind cluster on a laptop: the runner has no
+# route to it. Wiring up deployment requires either a cloud cluster (GKE/EKS)
+# with a stored KUBECONFIG secret, or a self-hosted runner bound to a reachable
+# cluster. Cluster deployment was verified locally instead - see
+# docs/SUBMISSION_REPORT.md.
 
-    - name: Smoke test
-      run: |
-        sleep 10
-        POD=$(kubectl get pod -n ${{ env.KUBE_NAMESPACE }} -l app.kubernetes.io/name=wisecow -o jsonpath='{.items[0].metadata.name}')
-        kubectl exec -n ${{ env.KUBE_NAMESPACE }} $POD -c wisecow -- nc -z localhost 4499
-        echo "✅ Deployment healthy"
