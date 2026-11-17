@@ -1,0 +1,16 @@
+# Certificate material - cert-manager issues these in-cluster; never commit keys
+tls.key
+tls.crt
+*.pem
+*.key
+*.crt
+
+# CI / local artefacts
+rendered.yaml
+kubeconform
+kubeconform.tar.gz
+trivy-results.sarif
+fix-repo.sh
+finalize.sh
+fix-repo.sh
+finalize.sh

@@ -1,10 +1,12 @@
+# No cert-manager annotation here on purpose: the Certificate resource in
+# 10-certificate.yaml already owns the wisecow-tls Secret. Adding a second
+# annotation would make the ingress-shim race the Certificate for that Secret.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: wisecow
   namespace: wisecow
   annotations:
-    cert-manager.io/cluster-issuer: "selfsigned-issuer"
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"

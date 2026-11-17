@@ -7,6 +7,7 @@ metadata:
     app.kubernetes.io/name: wisecow
     app.kubernetes.io/version: "1.0.0"
 spec:
+  replicas: 3
   selector:
     matchLabels:
       app.kubernetes.io/name: wisecow
@@ -31,6 +32,7 @@ spec:
       - name: nginx-config
         configMap:
           name: wisecow-nginx-config
+      # Writable paths required under readOnlyRootFilesystem: true
       - name: tmp
         emptyDir: {}
       - name: nginx-cache
@@ -38,6 +40,7 @@ spec:
       - name: nginx-run
         emptyDir: {}
       containers:
+      # ---- application ----
       - name: wisecow
         image: docker.io/vaibhav161202/wisecow:latest
         imagePullPolicy: Always
@@ -45,6 +48,9 @@ spec:
         - containerPort: 4499
           name: http
           protocol: TCP
+        envFrom:
+        - configMapRef:
+            name: wisecow-config
         resources:
           requests:
             cpu: "100m"
@@ -52,6 +58,7 @@ spec:
           limits:
             cpu: "500m"
             memory: "128Mi"
+        # The accept loop is single-threaded, so probes need generous timeouts
         livenessProbe:
           httpGet:
             path: /
@@ -76,6 +83,7 @@ spec:
         volumeMounts:
         - name: tmp
           mountPath: /tmp
+      # ---- TLS terminator ----
       - name: tls-sidecar
         image: nginx:1.27-alpine
         ports:
@@ -93,6 +101,8 @@ spec:
           mountPath: /var/cache/nginx
         - name: nginx-run
           mountPath: /var/run
+        # Requests matter: HPA averages utilisation across all containers.
+        # Without these the sidecar counts as 0% and skews the metric.
         resources:
           requests:
             cpu: "50m"
@@ -103,6 +113,7 @@ spec:
         readinessProbe:
           tcpSocket:
             port: 8443
+          initialDelaySeconds: 5
           periodSeconds: 10
         securityContext:
           allowPrivilegeEscalation: false
