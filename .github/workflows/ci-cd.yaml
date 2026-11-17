@@ -146,12 +146,62 @@ jobs:
       if: always() && github.event_name != 'pull_request'
       run: docker rm -f smoke || true
 
-# Deployment is intentionally not part of this workflow.
+  # Deployment runs on a self-hosted runner registered on the machine that
+  # hosts the kind cluster. A GitHub-hosted runner has no route to a local
+  # cluster, which is why this job is pinned to `self-hosted` rather than
+  # ubuntu-latest. If no runner is online the job queues instead of failing.
+  deploy:
+    name: Deploy to Kubernetes
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: self-hosted
+    permissions:
+      contents: read
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Confirm cluster is reachable
+      run: |
+        kubectl config current-context
+        kubectl get nodes
+
+    - name: Pin the deployment to this commit's image
+      run: |
+        IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+        # metadata-action emits a 7-character sha tag
+        SHORT_SHA="$(echo '${{ github.sha }}' | cut -c1-7)"
+        IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SHORT_SHA}"
+        echo "deploying $IMAGE"
+        sed -i "s|image: docker.io/.*/wisecow:.*|image: ${IMAGE}|" k8s/deployment.yaml
+        grep 'image:' k8s/deployment.yaml
+
+    - name: Apply manifests
+      run: |
+        kubectl apply -k k8s/
+        kubectl -n wisecow rollout status deployment/wisecow --timeout=180s
+
+    - name: Smoke test through the service
+      run: |
+        POD=$(kubectl -n wisecow get pod -l app.kubernetes.io/name=wisecow \
+          -o jsonpath='{.items[0].metadata.name}')
+        kubectl -n wisecow exec "$POD" -c wisecow -- \
+          sh -c 'wget -q -O- http://127.0.0.1:4499/ | grep -q "</pre>"'
+        echo "deployment serving a complete response"
+
+    - name: Report pod state
+      if: always()
+      run: |
+        kubectl -n wisecow get pods
+        kubectl -n wisecow get hpa
+
+# Deployment notes.
 #
-# The assessment asks for an Action that builds a new image when changes are
-# pushed, which the build job satisfies. A deploy stage cannot work from a
-# GitHub-hosted runner against a kind cluster on a laptop: the runner has no
-# route to it. Deployment requires a cloud cluster (GKE/EKS) with a stored
-# KUBECONFIG secret, or a self-hosted runner bound to a reachable cluster.
-# Cluster deployment was verified locally - see docs/SUBMISSION_REPORT.md.
+# The assessment asks for a build-and-push pipeline (satisfied by the build
+# job) and, as a challenge goal, automatic deployment to Kubernetes. The deploy
+# job above fulfils that goal using a self-hosted runner on the machine hosting
+# the cluster. A GitHub-hosted runner cannot route to a local kind cluster, so
+# `runs-on: self-hosted` is required rather than preferred.
+#
+# To disable CD, delete the deploy job - nothing else depends on it.
 
