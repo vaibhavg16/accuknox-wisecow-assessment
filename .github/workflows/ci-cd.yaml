@@ -71,5 +71,5 @@ jobs:
         kubectl apply -k k8s/ --dry-run=client --validate=false
         echo "✅ Manifests valid"
 
-  # Deploy job removed - requires accessible cluster
-  # Local kind deployment verified separately
+  # Deploy job removed - requires accessible Kubernetes cluster (GKE/EKS/self-hosted runner)
+  # Local kind deployment verified separately - see screenshots
