@@ -7,7 +7,6 @@ metadata:
     app.kubernetes.io/name: wisecow
     app.kubernetes.io/version: "1.0.0"
 spec:
-  replicas: 3
   selector:
     matchLabels:
       app.kubernetes.io/name: wisecow
@@ -15,11 +14,9 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: wisecow
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "4499"
     spec:
       serviceAccountName: wisecow-sa
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -34,7 +31,8 @@ spec:
       - name: nginx-config
         configMap:
           name: wisecow-nginx-config
-      # Writable directories for readOnlyRootFilesystem
+      - name: tmp
+        emptyDir: {}
       - name: nginx-cache
         emptyDir: {}
       - name: nginx-run
@@ -47,9 +45,6 @@ spec:
         - containerPort: 4499
           name: http
           protocol: TCP
-        envFrom:
-        - configMapRef:
-            name: wisecow-config
         resources:
           requests:
             cpu: "100m"
@@ -62,24 +57,27 @@ spec:
             path: /
             port: 4499
           initialDelaySeconds: 10
-          periodSeconds: 10
-          timeoutSeconds: 3
+          periodSeconds: 20
+          timeoutSeconds: 5
           failureThreshold: 3
         readinessProbe:
           httpGet:
             path: /
             port: 4499
           initialDelaySeconds: 5
-          periodSeconds: 5
-          timeoutSeconds: 2
+          periodSeconds: 10
+          timeoutSeconds: 5
           failureThreshold: 3
         securityContext:
           allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: false  # Needs to write FIFO in /app
+          readOnlyRootFilesystem: true
           capabilities:
             drop: ["ALL"]
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
       - name: tls-sidecar
-        image: nginx:alpine
+        image: nginx:1.27-alpine
         ports:
         - containerPort: 8443
           name: https
@@ -95,6 +93,17 @@ spec:
           mountPath: /var/cache/nginx
         - name: nginx-run
           mountPath: /var/run
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "32Mi"
+          limits:
+            cpu: "200m"
+            memory: "64Mi"
+        readinessProbe:
+          tcpSocket:
+            port: 8443
+          periodSeconds: 10
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true

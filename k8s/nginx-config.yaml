@@ -7,15 +7,19 @@ data:
   nginx.conf: |
     events { worker_connections 1024; }
     http {
+      access_log /dev/stdout;
+      error_log  /dev/stderr;
       server {
         listen 8443 ssl;
-        server_name localhost;
-        ssl_certificate /etc/nginx/certs/tls.crt;
+        server_name wisecow.local;
+        ssl_certificate     /etc/nginx/certs/tls.crt;
         ssl_certificate_key /etc/nginx/certs/tls.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
         location / {
-          proxy_pass http://localhost:4499;
+          proxy_pass http://127.0.0.1:4499;
           proxy_set_header Host $host;
           proxy_set_header X-Real-IP $remote_addr;
+          proxy_read_timeout 10s;
         }
       }
     }

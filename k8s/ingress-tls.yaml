@@ -4,7 +4,7 @@ metadata:
   name: wisecow
   namespace: wisecow
   annotations:
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    cert-manager.io/cluster-issuer: "selfsigned-issuer"
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
@@ -12,10 +12,10 @@ spec:
   ingressClassName: nginx
   tls:
   - hosts:
-    - wisecow.yourdomain.com
+    - wisecow.local
     secretName: wisecow-tls
   rules:
-  - host: wisecow.yourdomain.com
+  - host: wisecow.local
     http:
       paths:
       - path: /
