@@ -1,227 +1,194 @@
-# Wisecow on Kubernetes — AccuKnox DevOps Trainee Assessment
+# Wisecow on Kubernetes
 
-**Candidate:** Vaibhav Godse (`vaibhavg16`)
-**Email:** godsevaibhav@gmail.com
-**Docker Image:** `docker.io/vaibhav161202/wisecow:latest`
-**Repository:** Private (access granted to `nyrahul`)
+This is my submission for the AccuKnox DevOps trainee assessment. Two problems: get the
+[wisecow](https://github.com/nyrahul/wisecow) app running on Kubernetes with TLS, and write two
+system scripts.
 
----
+Everything here was run against a local `kind` cluster and is reproducible. The parts that broke
+along the way are documented too, because I'd rather you see how I work than a cleaned-up version
+of it.
 
-## 🎯 Problem Statement
-
-Containerize and deploy the [Wisecow](https://github.com/nyrahul/wisecow) application on Kubernetes with:
-
-1. A Dockerfile for the container image and K8s manifests to deploy it; the Wisecow service exposed as a K8s Service.
-2. A GitHub Action that builds a new image whenever changes are pushed to the repo.
-3. **[Challenge goal]** Secure TLS communication for the Wisecow app.
-
-Plus Problem 2: two system automation scripts (Bash + Python).
+- Image: `docker.io/vaibhav161202/wisecow:latest`
+- Cluster tested on: kind v1.36.1, single control-plane node
+- Date: November 2026
 
 ---
 
-## 🏗 Architecture
-
-```
-Client (HTTPS)
-      │
-      ▼
-Ingress (nginx)  ── TLS via cert-manager (self-signed ClusterIssuer)
-      │
-      ▼
-Service wisecow :443 (ClusterIP)
-      │
-      ├──▶ Pod 1 ── nginx sidecar :8443 (TLS) ──▶ wisecow :4499 (HTTP)
-      ├──▶ Pod 2 ── nginx sidecar :8443 (TLS) ──▶ wisecow :4499 (HTTP)
-      └──▶ Pod 3 ── nginx sidecar :8443 (TLS) ──▶ wisecow :4499 (HTTP)
-```
-
-**Key design decisions**
-
-| Decision | Rationale |
-|---|---|
-| **TLS sidecar pattern** | The upstream Wisecow app speaks plain HTTP only. An nginx sidecar terminates TLS and proxies to `127.0.0.1:4499`, so the app source stays unmodified. This mirrors production sidecar/mesh patterns (Envoy, Istio). |
-| **cert-manager + self-signed ClusterIssuer** | Automated issuance and rotation. Self-signed rather than Let's Encrypt because a local `kind` cluster has no public DNS or inbound ACME reachability. Swapping to `letsencrypt-prod` is a one-line `issuerRef` change once a real domain and ingress IP exist. |
-| **Debian slim over Alpine** | `fortune-mod` / `cowsay` need glibc-compatible builds; Alpine + musl caused packaging friction. |
-| **Fixed UID 10001** | Required for `runAsNonRoot: true` to be enforceable by the kubelet. |
-| **`/tmp` emptyDir** | The app creates a FIFO at `/tmp/response`; a read-only root filesystem needs a writable `/tmp`. |
-
----
-
-## 📦 Quick Start
-
-### Local Docker
+## Getting it running
 
 ```bash
-docker build -t vaibhav161202/wisecow:latest .
-docker run -d --name wc-test -p 14500:4499 vaibhav161202/wisecow:latest
-curl -s localhost:14500
-docker rm -f wc-test
-```
+git clone https://github.com/vaibhavg16/accuknox-wisecow-assessment.git
+cd accuknox-wisecow-assessment
 
-### Kubernetes (kind)
-
-```bash
-# 1. Cluster
 kind create cluster --name wisecow
-kind load docker-image vaibhav161202/wisecow:latest --name wisecow
 
-# 2. cert-manager (TLS)
+# cert-manager first, or the Certificate/ClusterIssuer manifests won't apply
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.0/cert-manager.yaml
 kubectl wait --for=condition=Available deployment/cert-manager-webhook -n cert-manager --timeout=120s
 
-# 3. metrics-server (required for HPA to read CPU/memory)
+# the HPA needs this; kind has no metrics-server
 kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
 kubectl -n kube-system patch deployment metrics-server --type=json \
   -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
 
-# 4. Deploy — note: apply -k (kustomize), NOT apply -f
 kubectl apply -k k8s/
 kubectl -n wisecow rollout status deployment/wisecow --timeout=180s
+```
 
-# 5. Verify HTTPS
+Three pods should come up at `2/2`: the app container and an nginx sidecar in each.
+
+```bash
 kubectl -n wisecow port-forward svc/wisecow 8443:443 &
 curl -k https://localhost:8443
 ```
 
-> **`kind` caveat:** the Deployment uses `imagePullPolicy: Always`, so the kubelet pulls from Docker Hub and ignores `kind load`. Push the image first (`docker push`), otherwise pods run a stale build.
+That prints a fortune inside a cow. If it doesn't, jump to the troubleshooting section.
 
 ---
 
-## 🔄 CI/CD Pipeline
+## How it fits together
 
-**Trigger:** push to `main`, pull request, or manual `workflow_dispatch`.
+The app itself is a Bash script that opens a netcat listener on 4499 and serves plain HTTP. It has
+no TLS support, and I didn't want to rewrite someone else's app to add it, so TLS is terminated by
+an nginx sidecar in the same pod. The sidecar listens on 8443, proxies to `127.0.0.1:4499`.
 
-| Stage | Tool | Purpose |
+```
+client --HTTPS--> Ingress :443 --> Service :443 --> nginx sidecar :8443
+                                                        |
+                                                   (TLS ends here)
+                                                        v
+                                                  wisecow :4499
+```
+
+Certificates come from cert-manager using a self-signed ClusterIssuer. Let's Encrypt can't validate a hostname on a cluster that only exists on my laptop. There's no public
+DNS and no way for the ACME challenge to reach me. On a real cluster with a real domain, swapping
+`issuerRef` to `letsencrypt-prod` is a one-line change.
+
+Things I hardened that weren't strictly required: non-root with a fixed UID of 10001, read-only
+root filesystem with `emptyDir` for `/tmp`, all capabilities dropped, `automountServiceAccountToken:
+false`.
+
+The sidecar bit me during testing. nginx writes to `/var/cache/nginx` and won't start with a
+read-only root. Needed two more `emptyDir` mounts before it stayed up.
+
+---
+
+## The CI/CD setup
+
+`.github/workflows/ci-cd.yaml`, three jobs:
+
+**validate** runs first and gates everything. It checks the entrypoint script is actually complete,
+renders the kustomization, validates it with kubeconform, and fails if any certificate material got
+committed. Nothing publishes until this passes.
+
+**build** runs Trivy, publishes SARIF to the Security tab, builds with Buildx, pushes to Docker Hub,
+then starts the image it just built and curls it for a real response before trusting the tag.
+
+**deploy** runs on a self-hosted runner. GitHub's hosted runners can't route to a kind cluster on my
+machine, so `runs-on: self-hosted` isn't a preference, it's the only way this works. It decodes a
+kubeconfig secret, rewrites the image tag to the commit's sha, applies the manifests, waits for
+rollout, then smoke-tests the pod twice: curl against the app on 4499, wget with
+`--no-check-certificate` against the sidecar on 8443.
+
+Pull requests build but don't publish, so a branch can't overwrite `latest`.
+
+One wrinkle worth knowing: deploy pins the live Deployment to a sha tag while the committed manifest
+stays on `:latest`. Any manual `kubectl apply -k k8s/` will reset it. That's a deliberate trade. Git records intent; the cluster records what actually shipped.
+
+---
+
+## Problem 2: the two scripts
+
+### `scripts/system-health-monitor.sh`
+
+Checks CPU, memory, disk and process count against thresholds of 80/80/85/300. Alerts print to the
+console and append to `~/system-health.log`.
+
+Bash, because it has to run on a bare host with nothing installed. `set -euo pipefail`, one
+function per metric so a bad parse in one doesn't take out the others, and a `$HOME`-relative log
+path so it runs unprivileged.
+
+Cron-ready:
+
+```
+*/5 * * * * /path/to/system-health-monitor.sh
+```
+
+### `scripts/app-health-checker.py`
+
+Takes URLs, checks HTTP status codes, reports up / degraded / down.
+
+- `up`: got an expected code (200 by default)
+- `degraded`: 4xx
+- `down`: 5xx, timeout, or connection refused
+
+Retries with exponential backoff, measures latency, `--json` for machine consumption, exit codes
+0/1/2 so it drops straight into cron or CI.
+
+```
+$ python3 scripts/app-health-checker.py https://example.com
+✅ https://example.com → UP (HTTP 200, 60.6ms)
+```
+
+I picked one in each language on purpose — the brief allows either, and this shows both.
+
+---
+
+## What broke, and what I'd do differently
+
+Keeping this section because a submission where nothing went wrong usually means nothing was
+actually run.
+
+**The script was truncated in the image.** `wisecow.sh` had an unclosed heredoc, so the container
+crashed on startup with `syntax error: unexpected end of file, wanted 'EOF'`. My local copy was fine. It was the copy inside the built image that was broken. Cost me a couple of hours chasing the
+cluster before I thought to check the image itself.
+
+**`imagePullPolicy: Always` ignores `kind load`.** I kept loading the new image into the cluster and
+the pods kept running the old one, because the kubelet pulls from Docker Hub and never looks at the
+local tarball. The fix is `docker push`, not `kind load`.
+
+**The smoke test used wget.** The runtime image is debian-slim, which ships curl for the healthcheck
+but no wget. The pipeline went red on a healthy container. Now it's curl in the app container, wget
+in the Alpine sidecar.
+
+**`kubectl apply -f k8s/`** — that passes `kustomization.yaml` to `-f`, which tries to read it as a
+manifest and fails with `no matches for kind "Kustomization"`. It's `-k`.
+
+**HPA showed `cpu: <unknown>`** for a while because kind doesn't ship metrics-server.
+
+If I kept going: ArgoCD instead of imperative `kubectl apply`, Prometheus instead of curl checks,
+Kyverno to enforce the security context at admission instead of by convention. And a `kind` cluster
+in CI so the manifests get applied to something real rather than just dry-run.
+
+---
+
+## Troubleshooting
+
+| What you see | Why | Fix |
 |---|---|---|
-| Build | Docker Buildx | Layered, cached image build |
-| Security scan | Trivy → SARIF | Vulnerabilities surfaced in the GitHub Security tab |
-| Push | Docker Hub | Tags `latest`, `main`, `sha-<commit>` via `docker/metadata-action` |
-| Manifest validation | `kubectl apply -k --dry-run=client` | Fails the build on malformed YAML |
-| Layer cache | GitHub Actions cache (`type=gha`) | Fast rebuilds |
-
-The assessment requires an Action that *creates a new image on change*, so the pipeline ends at publish. Deployment is a separate concern: a GitHub-hosted runner cannot reach a laptop-hosted `kind` cluster. The `deploy` stage is intentionally omitted; to add it, point the job at a reachable cluster (GKE/EKS or a self-hosted runner) and supply a `KUBECONFIG_DATA` secret.
-
-**Secrets required**
-
-- `DOCKERHUB_USERNAME` = `vaibhav161202`
-- `DOCKERHUB_TOKEN` = Docker Hub access token
+| `no matches for kind "Kustomization"` | used `-f` | use `-k` |
+| `no matches for kind "Certificate"` | cert-manager not installed yet | install it first |
+| `ImagePullBackOff` | local image never pushed | `docker push`, then restart |
+| Pods running an old build | `imagePullPolicy: Always` | push, don't rely on `kind load` |
+| `cpu: <unknown>` in HPA | no metrics-server | install it, patch `--kubelet-insecure-tls` |
+| sidecar `CrashLoopBackOff` | read-only root, nginx needs `/var/cache` | check the `emptyDir` mounts |
+| `mkfifo: Permission denied` | `/tmp` not writable | check the `tmp` mount exists |
+| `wrong version number` | spoke HTTPS to an HTTP port | 4499 is plain HTTP, 8443 is TLS |
+| nothing on 8443 | port-forward died | run it in its own terminal, don't background it |
 
 ---
 
-## 🔐 Security Hardening
+## Repo layout
 
-| Control | Implementation |
-|---|---|
-| Non-root execution | `runAsNonRoot: true`, `runAsUser: 10001`, shell set to `/usr/sbin/nologin` |
-| Read-only root filesystem | `readOnlyRootFilesystem: true` on both containers, with `emptyDir` for `/tmp`, `/var/cache/nginx`, `/var/run` |
-| Capability drop | `capabilities.drop: ["ALL"]` |
-| No privilege escalation | `allowPrivilegeEscalation: false` |
-| Seccomp | `seccompProfile.type: RuntimeDefault` |
-| Service account token | `automountServiceAccountToken: false` |
-| TLS in transit | cert-manager issued; TLSv1.2/1.3 only on the sidecar |
-| Image scanning | Trivy in CI, results in GitHub Security |
-
----
-
-## 🛠 Problem 2: Automation Scripts
-
-### 1. System Health Monitor — `scripts/system-health-monitor.sh`
-
-Bash, zero dependencies beyond coreutils. Monitors:
-
-| Metric | Threshold | Source |
-|---|---|---|
-| CPU usage | > 80% | `top -bn1` |
-| Memory usage | > 80% | `free` |
-| Disk usage (`/`) | > 85% | `df` |
-| Running processes | > 300 | `ps` |
-
-Features `set -euo pipefail`, timestamped alerts to console and `~/system-health.log`, and modular per-check functions. Cron-ready:
-
-```cron
-*/5 * * * * root /path/to/system-health-monitor.sh
 ```
-
-### 2. Application Health Checker — `scripts/app-health-checker.py`
-
-Python 3 with `requests`. Configurable retries with exponential backoff, latency measurement, and status classification:
-
-- `up` → expected code (default 200)
-- `degraded` → 4xx
-- `down` → 5xx, timeout, or connection error
-
-Supports `--json` output and CI-friendly exit codes (`0` all up, `1` any down, `2` degraded).
-
-```bash
-python3 scripts/app-health-checker.py https://example.com --json
+wisecow.sh              the app
+Dockerfile
+k8s/                    9 manifests + kustomization (apply with -k)
+scripts/                the two Problem 2 scripts
+docs/SUBMISSION_REPORT.md   longer write-up with test output
 ```
 
 ---
 
-## 📁 Repository Structure
+Vaibhav Godse / godsevaibhav@gmail.com
 
-```
-.
-├── Dockerfile
-├── wisecow.sh
-├── README.md
-├── LICENSE
-├── .github/
-│   └── workflows/ci-cd.yaml
-├── k8s/
-│   ├── kustomization.yaml
-│   ├── namespace.yaml
-│   ├── 00-selfsigned-issuer.yaml
-│   ├── 10-certificate.yaml
-│   ├── configmap.yaml
-│   ├── nginx-config.yaml
-│   ├── deployment.yaml
-│   ├── service.yaml
-│   ├── ingress-tls.yaml
-│   └── hpa.yaml
-├── scripts/
-│   ├── system-health-monitor.sh
-│   └── app-health-checker.py
-└── docs/
-    ├── SUBMISSION_REPORT.md
-    └── screenshots/
-```
-
----
-
-## 🧪 Verified on `kind` (2026-11-17)
-
-| Check | Result |
-|---|---|
-| `docker build` + local run | cowsay fortune served on :4499 |
-| Image published | `docker.io/vaibhav161202/wisecow:latest` |
-| Pods | 3 × `2/2 Running`, 0 restarts |
-| Service | `wisecow` ClusterIP, ports 80/443; headless on 4499 |
-| Ingress | class `nginx`, host `wisecow.local`, ports 80/443 |
-| Certificate | `READY=True`, issued by cert-manager, renews 2027-01-16 |
-| SANs | `DNS:wisecow.local`, `DNS:wisecow.wisecow.svc.cluster.local` |
-| HTTPS | `curl -k https://localhost:8443` → cowsay over **TLSv1.3 / TLS_AES_256_GCM_SHA384** |
-| Plain HTTP to TLS port | `400` — correctly refused |
-| HPA | `cpu: 4%/70%, memory: 5%/80%`, 3→10 replicas, metrics-server live |
-| Scripts | Both executed successfully |
-
----
-
-## ✅ Submission Checklist
-
-- [x] Dockerfile builds, runs, passes HTTP healthcheck
-- [x] K8s manifests apply cleanly; pods Ready
-- [x] Service exposes the app; Ingress terminates TLS
-- [x] HPA scales on CPU and memory
-- [x] GitHub Actions builds, scans, and publishes on every push
-- [x] Trivy scan integrated, SARIF uploaded to GitHub Security
-- [x] Two automation scripts (Bash + Python)
-- [x] Documentation: README + `docs/SUBMISSION_REPORT.md`
-- [ ] Repository set to **private**
-- [ ] `nyrahul` added as collaborator (Read)
-
----
-
-## 📞 Contact
-
-**Vaibhav Godse** — godsevaibhav@gmail.com
