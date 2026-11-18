@@ -12,5 +12,3 @@ kubeconform.tar.gz
 trivy-results.sarif
 fix-repo.sh
 finalize.sh
-fix-repo.sh
-finalize.sh
